@@ -58,7 +58,7 @@ def plot_seq(generated_seq):
     plt.plot(generated_seq)
     plt.show()
 
-def main(n_hid=500, batch_size=16, num_epochs=2, lr=0.01, seq_len=10,
+def main(n_hid=500, batch_size=16, num_epochs=2000, lr=0.01, seq_len=10,
         num_inputs=8000, testpct=0.01, length=10000, 
         output_file='lstm_gen.wav'):
     """ Builds the LSTM that is trained on the data.
@@ -118,8 +118,8 @@ def main(n_hid=500, batch_size=16, num_epochs=2, lr=0.01, seq_len=10,
     
     print "...generating sequence."
     generated_seq = generate(X_test, best_model, l_out, out_fn, length)
-    write_seq(generated_seq, output_file)
-    plt_seq(generated_seq)
+    write_seq(output_file, generated_seq)
+    plot_seq(generated_seq)
 
 
 if __name__ == '__main__':
