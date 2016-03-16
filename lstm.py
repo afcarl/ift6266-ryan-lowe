@@ -11,16 +11,10 @@ from lasagne.objectives import *
 from lasagne.updates import *
 from scipy.io import wavfile
 from time import time
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-
-def segment_data(data, example_size, seq_len):
-    """ Data enters as a 1-D array, and split up into chunks of size
-    example_size, which are separated into sequences of length seq_len.
-    """
-    data = (data - sum(data) / len(data)) /  (max(data) - min(data))
-    num_seq = int(len(data) / (example_size * seq_len))
-    data = data[: num_seq * seq_len * example_size]
-    return np.array(data).reshape(num_seq, seq_len, example_size).astype('float32')
+import wave
 
 def create_dataset(test_pct, num_inputs, seq_len):
     """ Takes the raw HDF5 file and converts it to a numpy array.
@@ -28,6 +22,18 @@ def create_dataset(test_pct, num_inputs, seq_len):
     path = './XqaJ2Ol5cC4.hdf5'
     with h5py.File(path, 'r') as f:
         dataset = f['features'][0].flatten()
+    
+    def segment_data(data, example_size, seq_len):
+        """ Data enters as a 1-D array, and split up into chunks of size
+        example_size, which are separated into sequences of length seq_len.
+        """
+        data = (data - sum(data) / len(data)) /  (max(data) - min(data))
+        num_seq = int(len(data) / (example_size * seq_len))
+        data = data[: num_seq * seq_len * example_size]
+        return np.array(data).reshape(num_seq, seq_len, example_size).astype('float32')
+    train_data = dataset[: len(dataset)*(1 - 2*test_pct)]
+    data_avg = sum(train_data) / len(train_data)
+    data_range = max(train_data) - min(train_data)
     data = {}
     data['train'] = segment_data(dataset[: len(dataset)*(1 - 2*test_pct)], 
             num_inputs, seq_len)
@@ -35,9 +41,9 @@ def create_dataset(test_pct, num_inputs, seq_len):
         len(dataset)*(1 - test_pct)], num_inputs, seq_len)
     data['test'] = segment_data(dataset[len(dataset)*(1 - test_pct):],
             num_inputs, seq_len)
-    return data
+    return data, data_avg, data_range
 
-def generate(X_test, model, l_out, out_fn, length):
+def generate(X_test, model, l_out, out_fn, length, data_avg, data_range):
     """ Given a trained model, generates output audio using the start
     of the test set as a seed.
     """
@@ -47,24 +53,37 @@ def generate(X_test, model, l_out, out_fn, length):
     prev_input = seed
     for x in range(0, length):
         next_input = out_fn(prev_input)
-        generated_seq.append(next_input.flatten()[0])
+        generated_seq.append(next_input.flatten()[0:8000])
         prev_input = next_input
-    return  np.array(generated_seq).astype('int16')
+    #generated_seq = generated_seq.flatten()
+    generated_seq = np.array(generated_seq).flatten() * data_range
+    generated_seq = generated_seq.astype('int16')
+    return generated_seq
 
 def write_seq(output_file, generated_seq, sampling_rate=16000):
+    print np.max(generated_seq)
+    print np.min(generated_seq)
+    print np.mean(generated_seq)
+    #with open(output_file, 'w') as f1:
+    #    f1.setnchannel(1)
+    #    f1.setsamplewidth(4)
+    #    f1.setframerate(sampling_rate)
+    #    f1.writeframes(generated_seq)
     wavfile.write(output_file, sampling_rate, generated_seq)
 
 def plot_seq(generated_seq):
+    print generated_seq.shape
     plt.plot(generated_seq)
-    plt.show()
+    plt.savefig('lstm.png')
 
-def main(n_hid=500, batch_size=16, num_epochs=2000, lr=0.01, seq_len=10,
-        num_inputs=8000, testpct=0.01, length=10000, 
+
+def main(n_hid=500, batch_size=16, num_epochs=2, lr=0.01, seq_len=10,
+        num_inputs=8000, testpct=0.01, length=50, 
         output_file='lstm_gen.wav'):
     """ Builds the LSTM that is trained on the data.
     """
     print "...loading data"
-    data = create_dataset(testpct, num_inputs, seq_len)
+    data, data_avg, data_range = create_dataset(testpct, num_inputs, seq_len)
     print "...building model"
     X_train = data['train']
     X_val = data['val']
@@ -117,9 +136,10 @@ def main(n_hid=500, batch_size=16, num_epochs=2000, lr=0.01, seq_len=10,
             + "  Total time: " + str(t)
     
     print "...generating sequence."
-    generated_seq = generate(X_test, best_model, l_out, out_fn, length)
-    write_seq(output_file, generated_seq)
+    generated_seq = generate(X_test, best_model, l_out, out_fn, length, data_avg, data_range)
     plot_seq(generated_seq)
+    np.savetxt('lstm_seq.txt', generated_seq)
+    write_seq(output_file, generated_seq)
 
 
 if __name__ == '__main__':
