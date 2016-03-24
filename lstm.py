@@ -55,7 +55,6 @@ def generate(X_test, model, l_out, out_fn, length, data_avg, data_range):
         next_input = out_fn(prev_input)
         generated_seq.append(next_input.flatten()[0:8000])
         prev_input = next_input
-    #generated_seq = generated_seq.flatten()
     generated_seq = np.array(generated_seq).flatten() * data_range
     generated_seq = generated_seq.astype('int16')
     return generated_seq
@@ -71,10 +70,10 @@ def write_seq(output_file, generated_seq, sampling_rate=16000):
     #    f1.writeframes(generated_seq)
     wavfile.write(output_file, sampling_rate, generated_seq)
 
-def plot_seq(generated_seq):
+def plot_seq(generated_seq, filename):
     print generated_seq.shape
     plt.plot(generated_seq)
-    plt.savefig('lstm.png')
+    plt.savefig(filename)
 
 
 def main(n_hid=500, batch_size=16, num_epochs=2, lr=0.01, seq_len=10,
@@ -137,7 +136,7 @@ def main(n_hid=500, batch_size=16, num_epochs=2, lr=0.01, seq_len=10,
     
     print "...generating sequence."
     generated_seq = generate(X_test, best_model, l_out, out_fn, length, data_avg, data_range)
-    plot_seq(generated_seq)
+    plot_seq(generated_seq, 'lstm.png')
     np.savetxt('lstm_seq.txt', generated_seq)
     write_seq(output_file, generated_seq)
 
