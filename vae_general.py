@@ -1,19 +1,48 @@
-from __future__ import division
 import sys
 import theano
 import theano.tensor as T
 import numpy as np
 import os
 import lasagne as nn
-import h5py
-from scipy.io import wavfile
-from time import time
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import wave
+import time
+from PIL import Image
+from scipy.stats import norm
+from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+import cPickle
+import gzip
+import pickle 
 
-from lstm import create_dataset, write_seq, plot_seq
+def load_dataset():
+    def load_mnist_images(f1):
+        with gzip.open(f1, 'rb') as f:
+            data = np.frombuffer(f.read(), np.uint8, offset=16)
+        data = data.reshape(-1, 1, 28, 28).transpose(0,1,3,2)
+        return data / np.float32(255)
+    X_train = load_mnist_images('train-images-idx3-ubyte.gz')
+    X_test = load_mnist_images('t10k-images-idx3-ubyte.gz')
+    X_train, X_val = X_train[:-10000], X_train[-10000:]
+    return X_train, X_val, X_test
+
+
+
+def get_image_array(X, index, shp=(28,28), channels=1):
+    ret = (X[index] * 255.).reshape(channels,shp[0],shp[1]) \
+            .transpose(2,1,0).clip(0,255).astype(np.uint8)
+    if channels == 1:
+        ret = ret.reshape(shp[1], shp[0])
+    return ret
+
+def get_image_pair(X, Xpr, channels=1, idx=-1):
+    mode = 'RGB' if channels == 3 else 'L'
+    shp=X[0][0].shape
+    i = np.random.randint(X.shape[0]) if idx == -1 else idx
+    orig = Image.fromarray(get_image_array(X, i, shp, channels), mode=mode)
+    ret = Image.new(mode, (orig.size[0], orig.size[1]*2))
+    ret.paste(orig, (0,0))
+    new = Image.fromarray(get_image_array(Xpr, i, shp, channels), mode=mode)
+    ret.paste(new, (0, orig.size[1]))
+    return ret
+
 
 def iterate_minibatches(inputs, batchsize, shuffle=False):
     if shuffle:
@@ -25,6 +54,8 @@ def iterate_minibatches(inputs, batchsize, shuffle=False):
         else:
             excerpt = slice(start_idx, start_idx + batchsize)
         yield inputs[excerpt]
+
+############################## Algorithm #################################
 
 class GaussianSampleLayer(nn.layers.MergeLayer):
     def __init__(self, mu, logsigma, rng=None, **kwargs):
@@ -81,14 +112,11 @@ def log_likelihood(tgt, mu, ls):
         - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
 def main(num_passes=2, z_size=2, hid_size=1024, num_epochs=300):
-
-    print "...loading data"
-    data, data_avg, data_range = create_dataset(testpct, num_inputs, seq_len)
-    print "...building model"
-    X_train = data['train']
-    X_val = data['val']
-    X_test = data['test']
-    X = T.tensor3('X')
+    print '...loading data'
+    X_train, X_val, X_test = load_dataset()
+    width = X_train[2]
+    height = X_train[3]
+    size = width*height
 
     print '...data loaded, building model'
     inputvar = T.tensor4('inputs')
@@ -143,21 +171,13 @@ def main(num_passes=2, z_size=2, hid_size=1024, num_epochs=300):
         print "Training error = %f"%(err / train_batch)
         print "Validation error = %f"%(val_err / val_batch)
 
-    print "...generating sequence."
-    generated_seq = generate(X_test, best_model, l_out, out_fn, length, data_avg, data_range)
-    plot_seq(generated_seq, 'lstm.png')
-    np.savetxt('lstm_seq.txt', generated_seq)
-    write_seq(output_file, generated_seq)
-
-
-
-#    test_err = 0
-#    test_batch = 0
-#    for batch in iterate_minibatches(X_test, batch_size, shuffle=False):
-#        this_test_err = test_fn(batch)
-#        test_err += this_test_err
-#        test_batch += 1
-#    print "Final test error: %f"%(test_err / test_batch)
+    test_err = 0
+    test_batch = 0
+    for batch in iterate_minibatches(X_test, batch_size, shuffle=False):
+        this_test_err = test_fn(batch)
+        test_err += this_test_err
+        test_batch += 1
+    print "Final test error: %f"%(test_err / test_batch)
 
             
 if __name__ == '__main__':
