@@ -1,19 +1,73 @@
-from __future__ import division
 import sys
+import os
+import numpy as np
 import theano
 import theano.tensor as T
-import numpy as np
-import os
 import lasagne as nn
+import time
+from PIL import Image
+from scipy.stats import norm
+from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 import h5py
 from scipy.io import wavfile
-from time import time
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import wave
 
-from lstm import create_dataset, write_seq, plot_seq
+
+
+
+# ############################################################################
+# Tencia Lee
+# Some code borrowed from:
+# https://github.com/Lasagne/Lasagne/blob/master/examples/mnist.py
+#
+# Implementation of variational autoencoder (AEVB) algorithm as in:
+# [1] arXiv:1312.6114 [stat.ML] (Diederik P Kingma, Max Welling 2013)
+
+# ################## Download and prepare the MNIST dataset ##################
+# For the linked MNIST data, the autoencoder learns well only in binary mode.
+# This is most likely due to the distribution of the values. Most pixels are
+# either very close to 0, or very close to 1.
+#
+# Running this code with default settings should produce a manifold similar
+# to the example in this directory. An animation of the manifold's evolution
+# can be found here: https://youtu.be/pgmnCU_DxzM
+
+
+# This code has been modified by Ryan Lowe for audio prediction
+
+
+def create_dataset(test_pct, num_inputs):
+    """ Takes the raw HDF5 file and converts it to a numpy array.
+        No 'seq_len' since it is assumed to be 1 (not needed for VAE). 
+    """
+    path = './XqaJ2Ol5cC4.hdf5'
+    with h5py.File(path, 'r') as f:
+        dataset = f['features'][0].flatten()
+
+    def segment_data(data, example_size):
+        """ Data enters as a 1-D array, and split up into chunks of size
+        example_size, which are separated into sequences of length seq_len.
+        """
+        data = (data - sum(data) / len(data)) /  (max(data) - min(data))
+        num_seq = int(len(data) / (example_size))
+        data = data[: num_seq * example_size]
+        return np.array(data).reshape(num_seq, example_size).astype('float32')
+    train_data = dataset[: len(dataset)*(1 - 2*test_pct)]
+    data_avg = sum(train_data) / len(train_data)
+    data_range = max(train_data) - min(train_data)
+    data = {} 
+    data['train'] = segment_data(dataset[: len(dataset)*(1 - 2*test_pct)],
+            num_inputs)
+    data['val'] = segment_data(dataset[len(dataset)*(1 - 2*test_pct):
+        len(dataset)*(1 - test_pct)], num_inputs)
+    data['test'] = segment_data(dataset[len(dataset)*(1 - test_pct):],
+            num_inputs)
+    return data, data_avg, data_range
+
+# ############################# Batch iterator ###############################
 
 def iterate_minibatches(inputs, batchsize, shuffle=False):
     if shuffle:
@@ -26,173 +80,247 @@ def iterate_minibatches(inputs, batchsize, shuffle=False):
             excerpt = slice(start_idx, start_idx + batchsize)
         yield inputs[excerpt]
 
+# ##################### Custom layer for middle of VCAE ######################
+# This layer takes the mu and sigma (both DenseLayers) and combines them with
+# a random vector epsilon to sample values for a multivariate Gaussian
+
 class GaussianSampleLayer(nn.layers.MergeLayer):
     def __init__(self, mu, logsigma, rng=None, **kwargs):
-        self.rng = rng if rng else RandomStreams(nn.random.get_rng().randint(1,1000))
+        self.rng = rng if rng else RandomStreams(nn.random.get_rng().randint(1,2147462579))
         super(GaussianSampleLayer, self).__init__([mu, logsigma], **kwargs)
-        self.mu = mu
-        self.logsigma = logsigma
-    
+
     def get_output_shape_for(self, input_shapes):
         return input_shapes[0]
 
     def get_output_for(self, inputs, deterministic=False, **kwargs):
         mu, logsigma = inputs
-        shape = shape=(self.input_shapes[0][0] or inputs[0].shape[0],
-                    self.input_shapes[0][1] or inputs[0].shape[1])
+        shape=(self.input_shapes[0][0] or inputs[0].shape[0],
+                self.input_shapes[0][1] or inputs[0].shape[1])
         if deterministic:
-            return self.mu
-        return self.mu + T.exp(self.logsigma) * self.rng.normal(shape)
-        
-def build_vae(inputvar, hid_size, z_size, num_passes=2, input_size=(28,28), output_size=784):
-    l_input = nn.layers.InputLayer(shape=(None,1,input_size[0],input_size[1]), input_var=inputvar, name='input')    
-    l_enc_hid = nn.layers.DenseLayer(l_input, num_units=hid_size, 
-        nonlinearity=nn.nonlinearities.tanh, name='enc_hid')
-    l_enc_mu = nn.layers.DenseLayer(l_enc_hid, num_units=z_size, nonlinearity=None,
-        name='enc_mu')
-    l_enc_logsigma = nn.layers.DenseLayer(l_enc_hid, num_units=z_size, nonlinearity=None,
-        name='enc_logsigma')
+            return mu
+        return mu + T.exp(logsigma) * self.rng.normal(shape)
+
+# ############################## Build Model #################################
+# encoder has 1 hidden layer, where we get mu and sigma for Z given an inp X
+# continuous decoder has 1 hidden layer, where we get mu and sigma for X given code Z
+# binary decoder has 1 hidden layer, where we calculate p(X=1)
+# once we have (mu, sigma) for Z, we sample L times
+# Then L separate outputs are constructed and the final layer averages them
+
+def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000):
+    x_dim = num_inputs
+    l_input = nn.layers.InputLayer(shape=(None,x_dim),
+            input_var=inputvar, name='input')
+    l_enc_hid = nn.layers.DenseLayer(l_input, num_units=n_hid,
+            nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
+            name='enc_hid')
+    l_enc_mu = nn.layers.DenseLayer(l_enc_hid, num_units=z_dim,
+            nonlinearity = None, name='enc_mu')
+    l_enc_logsigma = nn.layers.DenseLayer(l_enc_hid, num_units=z_dim,
+            nonlinearity = None, name='enc_logsigma')
+    l_dec_mu_list = []
+    l_dec_logsigma_list = []
     l_output_list = []
-    W_dec = None
-    b_dec = None
-    W_out = None
-    b_out = None
-
-    for i in range(num_passes):
+    # tie the weights of all L versions so they are the "same" layer
+    W_dec_hid = None
+    b_dec_hid = None
+    W_dec_mu = None
+    b_dec_mu = None
+    W_dec_ls = None
+    b_dec_ls = None
+    for i in xrange(L):
         l_Z = GaussianSampleLayer(l_enc_mu, l_enc_logsigma, name='Z')
-        l_dec_hid = nn.layers.DenseLayer(l_Z, num_units=hid_size, 
-            nonlinearity=nn.nonlinearities.tanh, 
-            W=nn.init.GlorotUniform() if W_dec == None else W_dec, 
-            b=nn.init.Constant(0.) if b_dec == None else b_dec,
-            name='dec_hid')
-        l_output = nn.layers.DenseLayer(l_dec_hid, num_units=output_size,
-            nonlinearity=nn.nonlinearities.sigmoid,        
-            W=nn.init.GlorotUniform() if W_out == None else W_out,
-            b=nn.init.Constant(0.) if b_out == None else b_out,
-            name='dec_out')
-        l_output_list.append(l_output)
-    
-    l_output = nn.layers.ElemwiseSumLayer(l_output_list, coeffs=1./num_passes, name='output')
-    return l_enc_mu, l_enc_logsigma, l_output_list, l_output
+        l_dec_hid = nn.layers.DenseLayer(l_Z, num_units=n_hid,
+                nonlinearity = nn.nonlinearities.tanh if binary else T.nnet.softplus,
+                W=nn.init.GlorotUniform() if W_dec_hid is None else W_dec_hid,
+                b=nn.init.Constant(0.) if b_dec_hid is None else b_dec_hid,
+                name='dec_hid')
+        if binary:
+            l_output = nn.layers.DenseLayer(l_dec_hid, num_units = x_dim,
+                    nonlinearity = nn.nonlinearities.sigmoid,
+                    W = nn.init.GlorotUniform() if W_dec_mu is None else W_dec_mu,
+                    b = nn.init.Constant(0.) if b_dec_mu is None else b_dec_mu,
+                    name = 'dec_output')
+            l_output_list.append(l_output)
+            if W_dec_hid is None:
+                W_dec_hid = l_dec_hid.W
+                b_dec_hid = l_dec_hid.b
+                W_dec_mu = l_output.W
+                b_dec_mu = l_output.b
+        else:
+            l_dec_mu = nn.layers.DenseLayer(l_dec_hid, num_units=x_dim,
+                    nonlinearity = None,
+                    W = nn.init.GlorotUniform() if W_dec_mu is None else W_dec_mu,
+                    b = nn.init.Constant(0) if b_dec_mu is None else b_dec_mu,
+                    name = 'dec_mu')
+            # relu_shift is for numerical stability - if training data has any
+            # dimensions where stdev=0, allowing logsigma to approach -inf
+            # will cause the loss function to become NAN. So we set the limit
+            # stdev >= exp(-1 * relu_shift)
+            relu_shift = 10
+            l_dec_logsigma = nn.layers.DenseLayer(l_dec_hid, num_units=x_dim,
+                    W = nn.init.GlorotUniform() if W_dec_ls is None else W_dec_ls,
+                    b = nn.init.Constant(0) if b_dec_ls is None else b_dec_ls,
+                    nonlinearity = lambda a: T.nnet.relu(a+relu_shift)-relu_shift,
+                    name='dec_logsigma')
+            l_output = GaussianSampleLayer(l_dec_mu, l_dec_logsigma,
+                    name='dec_output')
+            l_dec_mu_list.append(l_dec_mu)
+            l_dec_logsigma_list.append(l_dec_logsigma)
+            l_output_list.append(l_output)
+            if W_dec_hid is None:
+                W_dec_hid = l_dec_hid.W
+                b_dec_hid = l_dec_hid.b
+                W_dec_mu = l_dec_mu.W
+                b_dec_mu = l_dec_mu.b
+                W_dec_ls = l_dec_logsigma.W
+                b_dec_ls = l_dec_logsigma.b
+    l_output = nn.layers.ElemwiseSumLayer(l_output_list, coeffs=1./L, name='output')
+    return l_enc_mu, l_enc_logsigma, l_dec_mu_list, l_dec_logsigma_list, l_output_list, l_output
 
+# ############################## Main program ################################
 
 def log_likelihood(tgt, mu, ls):
     return T.sum(-(np.float32(0.5 * np.log(2 * np.pi)) + ls)
-        - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
+            - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
-def main(num_passes=2, z_size=2, hid_size=1024, num_epochs=300):
-
-    print "...loading data"
-    data, data_avg, data_range = create_dataset(testpct, num_inputs, seq_len)
-    print "...building model"
+def main(L=2, z_dim=2, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, num_inputs=32000):
+    print("Loading data...")
+    data, data_avg, data_range = create_dataset(test_pct, num_inputs)
     X_train = data['train']
     X_val = data['val']
     X_test = data['test']
-    X = T.tensor3('X')
+    #width, height = X_train.shape[2], X_train.shape[3]
+    input_var = T.matrix('inputs')
 
-    print '...data loaded, building model'
-    inputvar = T.tensor4('inputs')
-    enc_mu, enc_logsigma, l_output_list, l_output = build_vae(inputvar, hid_size=hid_size, z_size=z_size, 
-        num_passes=num_passes)
-    
+    # Create VAE model
+    print("Building model and compiling functions...")
+    print("L = {}, z_dim = {}, n_hid = {}, binary={}".format(L, z_dim, n_hid, binary))
+    x_dim = num_inputs
+    l_z_mu, l_z_ls, l_x_mu_list, l_x_ls_list, l_x_list, l_x = \
+           build_vae(input_var, L=L, binary=binary, z_dim=z_dim, n_hid=n_hid, num_inputs=num_inputs)
+
     def build_loss(deterministic):
-        layer_outputs = nn.layers.get_output([enc_mu, enc_logsigma] + l_output_list + [l_output])
-        z_mu = layer_outputs[0]
-        z_ls = layer_outputs[1]
-        x_list = layer_outputs[2:2+L]
-        x_out = layer_otuputs[-1]
-
-        # Calculating loss via KL and reconstruction term
-        kl_div = 0.5 * T.sum(1 + 2*z_ls - T.sqr(z_mu) + T.exp(2*z_ls))
-        log_pxz = -1./L * sum(nn.objectives.crossentropy(x, 
-            inputvar_flatten(2)).sum() for x in x_list)
-        loss = -1. * (kl_div + log_pxz)
-        prediction = x_mu[0] if deterministic else 0
+        layer_outputs = nn.layers.get_output([l_z_mu, l_z_ls] + l_x_mu_list + l_x_ls_list
+                + l_x_list + [l_x], deterministic=deterministic)
+        z_mu =  layer_outputs[0]
+        z_ls =  layer_outputs[1]
+        x_mu =  [] if binary else layer_outputs[2:2+L]
+        x_ls =  [] if binary else layer_outputs[2+L:2+2*L]
+        x_list =  layer_outputs[2:2+L] if binary else layer_outputs[2+2*L:2+3*L]
+        x = layer_outputs[-1]
+        # Loss expression has two parts as specified in [1]
+        # kl_div = KL divergence between p_theta(z) and p(z|x)
+        # - divergence between prior distr and approx posterior of z given x
+        # - or how likely we are to see this z when accounting for Gaussian prior
+        # logpxz = log p(x|z)
+        # - log-likelihood of x given z
+        # - in binary case logpxz = cross-entropy
+        # - in continuous case, is log-likelihood of seeing the target x under the
+        #   Gaussian distribution parameterized by dec_mu, sigma = exp(dec_logsigma)
+        kl_div = 0.5 * T.sum(1 + 2*z_ls - T.sqr(z_mu) - T.exp(2 * z_ls))
+        if binary:
+            logpxz = sum(nn.objectives.binary_crossentropy(x,
+                input_var.flatten(2)).sum() for x in x_list) * (-1./L)
+            prediction = x_list[0] if deterministic else x
+        else:
+            logpxz = sum(log_likelihood(input_var.flatten(2), mu, ls)
+                for mu, ls in zip(x_mu, x_ls))/L
+            prediction = x_mu[0] if deterministic else T.sum(x_mu, axis=0)/L
+        loss = -1 * (logpxz + kl_div)
         return loss, prediction
 
-    train_loss, _ = build_loss(deterministic=False)
-    test_loss, test_pred = build_loss(deterministic=True)
-    
-    # ADAM updates
-    params = nn.layers.get_all_params(l_output, trainable=True)
-    updates = nn.updates.adam(train_loss, params, learning_rate=1e-4)
-    train_fn = theano.function([input_var], train_loss, updates=updates)
-    test_fn = theano.function([input_var], test_loss)
+    # If there are dropout layers etc these functions return masked or non-masked expressions
+    # depending on if they will be used for training or validation/test err calcs
+    loss, _ = build_loss(deterministic=False)
+    test_loss, test_prediction = build_loss(deterministic=True)
 
-    print '...starting training'
+    # ADAM updates
+    params = nn.layers.get_all_params(l_x, trainable=True)
+    updates = nn.updates.adam(loss, params, learning_rate=1e-4)
+    train_fn = theano.function([input_var], loss, updates=updates)
+    val_fn = theano.function([input_var], test_loss)
+
+    print("Starting training...")
     batch_size = 100
-    while epoch <= num_epochs:
-        train_batch = 0 
-        err = 0
+    for epoch in range(num_epochs):
+        train_err = 0
+        train_batches = 0
         start_time = time.time()
         for batch in iterate_minibatches(X_train, batch_size, shuffle=True):
             this_err = train_fn(batch)
-            err += this_err
-            train_batch += 1
-        
+            train_err += this_err
+            train_batches += 1
         val_err = 0
-        val_batch = 0
+        val_batches = 0
         for batch in iterate_minibatches(X_val, batch_size, shuffle=False):
-            this_val_err = test_fn(batch)
-            val_err += this_val_err
-            val_batch += 1
+            err = val_fn(batch)
+            val_err += err
+            val_batches += 1
+        print("Epoch {} of {} took {:.3f}s".format(
+            epoch + 1, num_epochs, time.time() - start_time))
+        print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
+        print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
 
-        epoch += 1
-        time_elapsed = start_time - time.time()
-        print "Finished %d epochs, %f seconds elapsed"%(epoch, time_elapsed)
-        print "Training error = %f"%(err / train_batch)
-        print "Validation error = %f"%(val_err / val_batch)
+    test_err = 0
+    test_batches = 0
+    for batch in iterate_minibatches(X_test, batch_size, shuffle=False):
+        err = val_fn(batch)
+        test_err += err
+        test_batches += 1
+    test_err /= test_batches
+    print("Final results:")
+    print("  test loss:\t\t\t{:.6f}".format(test_err))
 
-    print "...generating sequence."
-    generated_seq = generate(X_test, best_model, l_out, out_fn, length, data_avg, data_range)
-    plot_seq(generated_seq, 'lstm.png')
-    np.savetxt('lstm_seq.txt', generated_seq)
-    write_seq(output_file, generated_seq)
+    # save some example pictures so we can see what it's done 
+    num_samples = 5
+    sampling_rate = 16000
+    X_comp = X_test[:example_batch_size]
+    pred_fn = theano.function([input_var], test_prediction)
+    X_pred = pred_fn(X_comp) #.reshape(-1, 1, width, height)
+    for i in range(num_samples):
+        output_file = './vae_generated_sample_' + str(i) + '.wav'
+        wavfile.write(output_file, sampling_rate, generated_seq)
+        # get_image_pair(X_comp, X_pred, idx=i, channels=1).save('output_{}.jpg'.format(i))
 
+    # save the parameters so they can be loaded for next time
+    print("Saving")
+    fn = 'params_{:.6f}'.format(test_err)
+    np.savez(fn + '.npz', *nn.layers.get_all_param_values(l_x))
+    
+    """
+    # sample from latent space if it's 2d
+    if z_dim == 2:
+        # functions for generating images given a code (used for visualization)
+        # for an given code z, we deterministically take x_mu as the generated data
+        # (no Gaussian noise is used to either encode or decode).
+        z_var = T.vector()
+        if binary:
+            generated_x = nn.layers.get_output(l_x, {l_z_mu:z_var}, deterministic=True)
+        else:
+            generated_x = nn.layers.get_output(l_x_mu_list[0], {l_z_mu:z_var}, 
+                    deterministic=True)
+        gen_fn = theano.function([z_var], generated_x)
+        im = Image.new('L', (width*19,height*19))
+        for (x,y),val in np.ndenumerate(np.zeros((19,19))):
+            z = np.asarray([norm.ppf(0.05*(x+1)), norm.ppf(0.05*(y+1))],
+                    dtype=theano.config.floatX)
+            x_gen = gen_fn(z).reshape(-1, 1, width, height)
+            im.paste(Image.fromarray(get_image_array(x_gen,0)), (x*width,y*height))
+            im.save('gen.jpg')
+    """
 
-
-#    test_err = 0
-#    test_batch = 0
-#    for batch in iterate_minibatches(X_test, batch_size, shuffle=False):
-#        this_test_err = test_fn(batch)
-#        test_err += this_test_err
-#        test_batch += 1
-#    print "Final test error: %f"%(test_err / test_batch)
-
-            
 if __name__ == '__main__':
-    main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    # Arguments - integers, except for binary/continous. Default uses binary.
+    # Run with option --continuous for continuous output.
+    import argparse
+    parser = argparse.ArgumentParser(description='Command line options')
+    parser.add_argument('--num_epochs', type=int, dest='num_epochs')
+    parser.add_argument('--L', type=int, dest='L')
+    parser.add_argument('--z_dim', type=int, dest='z_dim')
+    parser.add_argument('--n_hid', type=int, dest='n_hid')
+    parser.add_argument('--binary', dest='binary', action='store_true')
+    parser.add_argument('--continuous', dest='binary', action='store_false')
+    parser.set_defaults(binary=True)
+    args = parser.parse_args(sys.argv[1:])
+    main(**{k:v for (k,v) in vars(args).items() if v is not None})

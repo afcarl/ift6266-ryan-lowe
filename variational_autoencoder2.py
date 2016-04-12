@@ -90,6 +90,8 @@ def main():
                 print "\b"*100, i, j, l,
                 sys.stdout.flush()
         all_examples = []
+        #sample generation code hasn't actually been converted yet: still have to fix bug with
+        #model compilation
         for k in range(10):
             random_index = np.random.randint(0, train_set.shape[0])
             random_samples, muu = samples(random_index)
