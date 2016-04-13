@@ -1,3 +1,4 @@
+from __future__ import division
 import sys
 import os
 import numpy as np
@@ -113,7 +114,11 @@ def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000)
             input_var=inputvar, name='input')
     l_enc_hid = nn.layers.DenseLayer(l_input, num_units=n_hid,
             nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
-            name='enc_hid')
+            name='enc_hid1')
+    #l_enc_hid2 = nn.layers.DenseLayer(l_enc_hid1, num_units=n_hid,
+    #        nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
+    #        name='enc_hid2')
+    
     l_enc_mu = nn.layers.DenseLayer(l_enc_hid, num_units=z_dim,
             nonlinearity = None, name='enc_mu')
     l_enc_logsigma = nn.layers.DenseLayer(l_enc_hid, num_units=z_dim,
@@ -134,7 +139,12 @@ def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000)
                 nonlinearity = nn.nonlinearities.tanh if binary else T.nnet.softplus,
                 W=nn.init.GlorotUniform() if W_dec_hid is None else W_dec_hid,
                 b=nn.init.Constant(0.) if b_dec_hid is None else b_dec_hid,
-                name='dec_hid')
+                name='dec_hid1')
+        #l_dec_hid = nn.layers.DenseLayer(l_dec_hid1, num_units=n_hid,
+        #        nonlinearity = nn.nonlinearities.tanh if binary else T.nnet.softplus,
+        #        W=nn.init.GlorotUniform() if W_dec_hid is None else W_dec_hid,
+        #        b=nn.init.Constant(0.) if b_dec_hid is None else b_dec_hid,
+        #        name='dec_hid2'
         if binary:
             l_output = nn.layers.DenseLayer(l_dec_hid, num_units = x_dim,
                     nonlinearity = nn.nonlinearities.sigmoid,
@@ -184,12 +194,19 @@ def log_likelihood(tgt, mu, ls):
     return T.sum(-(np.float32(0.5 * np.log(2 * np.pi)) + ls)
             - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
-def main(L=2, z_dim=2, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, num_inputs=32000):
+def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, num_inputs=32000, lr=1e-5):
     print("Loading data...")
     data, data_avg, data_range = create_dataset(test_pct, num_inputs)
     X_train = data['train']
     X_val = data['val']
     X_test = data['test']
+    print X_train.shape
+    print X_val.shape
+    print X_test.shape
+    print X_train[0]
+    print data_avg
+    print data_range
+
     #width, height = X_train.shape[2], X_train.shape[3]
     input_var = T.matrix('inputs')
 
@@ -237,7 +254,7 @@ def main(L=2, z_dim=2, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
 
     # ADAM updates
     params = nn.layers.get_all_params(l_x, trainable=True)
-    updates = nn.updates.adam(loss, params, learning_rate=1e-4)
+    updates = nn.updates.adam(loss, params, learning_rate=lr)
     train_fn = theano.function([input_var], loss, updates=updates)
     val_fn = theano.function([input_var], test_loss)
 
@@ -271,22 +288,36 @@ def main(L=2, z_dim=2, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
     test_err /= test_batches
     print("Final results:")
     print("  test loss:\t\t\t{:.6f}".format(test_err))
+   
+    def plot_seq(generated_seq, filename):
+        print generated_seq.shape
+        plt.plot(generated_seq)
+        plt.savefig(filename)
+
+
+    def write_to_wav(filename, sampling_rate, generated_seq):
+        generated_seq = np.array(generated_seq).flatten() * data_range
+        generated_seq = generated_seq.astype('int16')
+        wavfile.write(filename, sampling_rate, generated_seq)
+        np.savetxt(filename[:-3]+'txt', generated_seq)
 
     # save some example pictures so we can see what it's done 
     num_samples = 5
     sampling_rate = 16000
-    X_comp = X_test[:example_batch_size]
+    X_comp = X_test[:num_samples]
     pred_fn = theano.function([input_var], test_prediction)
     X_pred = pred_fn(X_comp) #.reshape(-1, 1, width, height)
-    for i in range(num_samples):
-        output_file = './vae_generated_sample_' + str(i) + '.wav'
-        wavfile.write(output_file, sampling_rate, generated_seq)
+    for i in range(num_samples):         
+        orig_file = './samples/orig_sample_' + str(i) + '.wav'
+        write_to_wav(orig_file, sampling_rate, X_comp[i])
+        output_file = './samples/vae_generated_sample_' + str(i) + '.wav'
+        write_to_wav(output_file, sampling_rate, X_pred[i])
         # get_image_pair(X_comp, X_pred, idx=i, channels=1).save('output_{}.jpg'.format(i))
 
     # save the parameters so they can be loaded for next time
-    print("Saving")
-    fn = 'params_{:.6f}'.format(test_err)
-    np.savez(fn + '.npz', *nn.layers.get_all_param_values(l_x))
+    #print("Saving")
+    #fn = 'params_{:.6f}'.format(test_err)
+    #np.savez(fn + '.npz', *nn.layers.get_all_param_values(l_x))
     
     """
     # sample from latent space if it's 2d

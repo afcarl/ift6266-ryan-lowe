@@ -1,7 +1,8 @@
 """
 Variational Autoencoder
 
-Written by Ryan Lowe in conjunction with Jean Harb
+Hacky code written by Ryan Lowe in conjunction with Jean Harb
+Note that this is not the version used for the experiments
 IFT 6266
 """
 
