@@ -112,12 +112,12 @@ def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000)
     x_dim = num_inputs
     l_input = nn.layers.InputLayer(shape=(None,x_dim),
             input_var=inputvar, name='input')
+    #l_enc_hid1 = nn.layers.DenseLayer(l_input, num_units=n_hid,
+    #        nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
+    #        name='enc_hid1')
     l_enc_hid = nn.layers.DenseLayer(l_input, num_units=n_hid,
             nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
-            name='enc_hid1')
-    #l_enc_hid2 = nn.layers.DenseLayer(l_enc_hid1, num_units=n_hid,
-    #        nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
-    #        name='enc_hid2')
+            name='enc_hid2')
     
     l_enc_mu = nn.layers.DenseLayer(l_enc_hid, num_units=z_dim,
             nonlinearity = None, name='enc_mu')
@@ -129,22 +129,24 @@ def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000)
     # tie the weights of all L versions so they are the "same" layer
     W_dec_hid = None
     b_dec_hid = None
+    W_dec_hid1 = None
+    b_dec_hid1 = None
     W_dec_mu = None
     b_dec_mu = None
     W_dec_ls = None
     b_dec_ls = None
     for i in xrange(L):
         l_Z = GaussianSampleLayer(l_enc_mu, l_enc_logsigma, name='Z')
+        #l_dec_hid1 = nn.layers.DenseLayer(l_Z, num_units=n_hid,
+        #        nonlinearity = nn.nonlinearities.tanh if binary else T.nnet.softplus,
+        #        W=nn.init.GlorotUniform() if W_dec_hid is None else W_dec_hid,
+        #        b=nn.init.Constant(0.) if b_dec_hid is None else b_dec_hid,
+        #        name='dec_hid1')
         l_dec_hid = nn.layers.DenseLayer(l_Z, num_units=n_hid,
                 nonlinearity = nn.nonlinearities.tanh if binary else T.nnet.softplus,
                 W=nn.init.GlorotUniform() if W_dec_hid is None else W_dec_hid,
                 b=nn.init.Constant(0.) if b_dec_hid is None else b_dec_hid,
-                name='dec_hid1')
-        #l_dec_hid = nn.layers.DenseLayer(l_dec_hid1, num_units=n_hid,
-        #        nonlinearity = nn.nonlinearities.tanh if binary else T.nnet.softplus,
-        #        W=nn.init.GlorotUniform() if W_dec_hid is None else W_dec_hid,
-        #        b=nn.init.Constant(0.) if b_dec_hid is None else b_dec_hid,
-        #        name='dec_hid2'
+                name='dec_hid')
         if binary:
             l_output = nn.layers.DenseLayer(l_dec_hid, num_units = x_dim,
                     nonlinearity = nn.nonlinearities.sigmoid,
@@ -153,6 +155,8 @@ def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000)
                     name = 'dec_output')
             l_output_list.append(l_output)
             if W_dec_hid is None:
+                #W_dec_hid1 = l_dec_hid1.W
+                #b_dec_hid1 = l_dec_hid1.b
                 W_dec_hid = l_dec_hid.W
                 b_dec_hid = l_dec_hid.b
                 W_dec_mu = l_output.W
@@ -179,6 +183,8 @@ def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000)
             l_dec_logsigma_list.append(l_dec_logsigma)
             l_output_list.append(l_output)
             if W_dec_hid is None:
+                #W_dec_hid1 = l_dec_hid1.W
+                #b_dec_hid1 = l_dec_hid1.b
                 W_dec_hid = l_dec_hid.W
                 b_dec_hid = l_dec_hid.b
                 W_dec_mu = l_dec_mu.W
@@ -194,7 +200,8 @@ def log_likelihood(tgt, mu, ls):
     return T.sum(-(np.float32(0.5 * np.log(2 * np.pi)) + ls)
             - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
-def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, num_inputs=32000, lr=1e-5):
+def main(L=2, z_dim=5, n_hid=2000, num_epochs=40, binary=True, test_pct=0.04, num_inputs=32000,
+        lr=1e-5, kl_term=1, folder="z5h2k"):
     print("Loading data...")
     data, data_avg, data_range = create_dataset(test_pct, num_inputs)
     X_train = data['train']
@@ -212,7 +219,7 @@ def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
 
     # Create VAE model
     print("Building model and compiling functions...")
-    print("L = {}, z_dim = {}, n_hid = {}, binary={}".format(L, z_dim, n_hid, binary))
+    print("L = {}, z_dim = {}, n_hid = {}, binary={}, kl_term={}".format(L, z_dim, n_hid, binary, kl_term))
     x_dim = num_inputs
     l_z_mu, l_z_ls, l_x_mu_list, l_x_ls_list, l_x_list, l_x = \
            build_vae(input_var, L=L, binary=binary, z_dim=z_dim, n_hid=n_hid, num_inputs=num_inputs)
@@ -244,7 +251,7 @@ def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
             logpxz = sum(log_likelihood(input_var.flatten(2), mu, ls)
                 for mu, ls in zip(x_mu, x_ls))/L
             prediction = x_mu[0] if deterministic else T.sum(x_mu, axis=0)/L
-        loss = -1 * (logpxz + kl_div)
+        loss = -1 * (logpxz + kl_term * kl_div)
         return loss, prediction
 
     # If there are dropout layers etc these functions return masked or non-masked expressions
@@ -257,9 +264,13 @@ def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
     updates = nn.updates.adam(loss, params, learning_rate=lr)
     train_fn = theano.function([input_var], loss, updates=updates)
     val_fn = theano.function([input_var], test_loss)
-
+    
+    best_val_err = np.inf
+    break_count = 0
     print("Starting training...")
     batch_size = 100
+    train_err_list = []
+    val_err_list = []
     for epoch in range(num_epochs):
         train_err = 0
         train_batches = 0
@@ -274,11 +285,19 @@ def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
             err = val_fn(batch)
             val_err += err
             val_batches += 1
+        train_err_list.append(train_err)
+        val_err_list.append(val_err)
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, num_epochs, time.time() - start_time))
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
         print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
-
+        if val_err > best_val_err:
+            break_count += 1
+        else:
+            break_count = 0
+            best_val_err = val_err
+        if break_count > 50:
+            break
     test_err = 0
     test_batches = 0
     for batch in iterate_minibatches(X_test, batch_size, shuffle=False):
@@ -290,9 +309,14 @@ def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
     print("  test loss:\t\t\t{:.6f}".format(test_err))
    
     def plot_seq(generated_seq, filename):
-        print generated_seq.shape
         plt.plot(generated_seq)
         plt.savefig(filename)
+    
+    def plot_err(train_err, val_err, filename):
+        xax = np.arange(0, len(train_err))
+        plt.plot(xax, train_err, 'b', xax, val_err, 'r')
+        plt.savefig(filename)
+
 
 
     def write_to_wav(filename, sampling_rate, generated_seq):
@@ -300,6 +324,9 @@ def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
         generated_seq = generated_seq.astype('int16')
         wavfile.write(filename, sampling_rate, generated_seq)
         np.savetxt(filename[:-3]+'txt', generated_seq)
+    
+    if not os.path.exists('./samples/'+ str(folder)):
+        os.makedirs('./samples/'+str(folder))
 
     # save some example pictures so we can see what it's done 
     num_samples = 5
@@ -308,10 +335,12 @@ def main(L=2, z_dim=5, n_hid=1024, num_epochs=300, binary=True, test_pct=0.04, n
     pred_fn = theano.function([input_var], test_prediction)
     X_pred = pred_fn(X_comp) #.reshape(-1, 1, width, height)
     for i in range(num_samples):         
-        orig_file = './samples/orig_sample_' + str(i) + '.wav'
+        orig_file = './samples/'+ str(folder)+'/orig_sample_' + str(i) + '.wav'
         write_to_wav(orig_file, sampling_rate, X_comp[i])
-        output_file = './samples/vae_generated_sample_' + str(i) + '.wav'
+        output_file = './samples/'+str(folder)+'/vae_generated_sample_' + str(i) + '.wav'
         write_to_wav(output_file, sampling_rate, X_pred[i])
+        plot_seq(X_pred[i], output_file[:-3]+'fig')
+    plot_err(train_err_list, val_err_list, './samples/'+str(folder)+'error.fig')
         # get_image_pair(X_comp, X_pred, idx=i, channels=1).save('output_{}.jpg'.format(i))
 
     # save the parameters so they can be loaded for next time
@@ -353,5 +382,8 @@ if __name__ == '__main__':
     parser.add_argument('--binary', dest='binary', action='store_true')
     parser.add_argument('--continuous', dest='binary', action='store_false')
     parser.set_defaults(binary=True)
+    parser.add_argument('--kl_term', type=float, dest='kl_term')
+    parser.add_argument('--lr', type=int, dest='lr')
+    parser.add_argument('--folder', type=str, dest='folder')
     args = parser.parse_args(sys.argv[1:])
     main(**{k:v for (k,v) in vars(args).items() if v is not None})
