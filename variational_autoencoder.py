@@ -112,9 +112,9 @@ def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000)
     x_dim = num_inputs
     l_input = nn.layers.InputLayer(shape=(None,x_dim),
             input_var=inputvar, name='input')
-    #l_enc_hid1 = nn.layers.DenseLayer(l_input, num_units=n_hid,
-    #        nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
-    #        name='enc_hid1')
+    l_enc_hid1 = nn.layers.DenseLayer(l_input, num_units=n_hid,
+            nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
+            name='enc_hid1')
     l_enc_hid = nn.layers.DenseLayer(l_input, num_units=n_hid,
             nonlinearity=nn.nonlinearities.tanh if binary else T.nnet.softplus,
             name='enc_hid2')
@@ -200,7 +200,7 @@ def log_likelihood(tgt, mu, ls):
     return T.sum(-(np.float32(0.5 * np.log(2 * np.pi)) + ls)
             - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
-def main(L=2, z_dim=5, n_hid=2000, num_epochs=40, binary=True, test_pct=0.04, num_inputs=32000,
+def main(L=2, z_dim=5, n_hid=2000, num_epochs=2, binary=True, test_pct=0.04, num_inputs=32000,
         lr=1e-5, kl_term=1, folder="z5h2k"):
     print("Loading data...")
     data, data_avg, data_range = create_dataset(test_pct, num_inputs)
@@ -285,8 +285,8 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=40, binary=True, test_pct=0.04, nu
             err = val_fn(batch)
             val_err += err
             val_batches += 1
-        train_err_list.append(train_err)
-        val_err_list.append(val_err)
+        train_err_list.append(train_err / train_batches)
+        val_err_list.append(val_err / val_batches)
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, num_epochs, time.time() - start_time))
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
@@ -296,7 +296,7 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=40, binary=True, test_pct=0.04, nu
         else:
             break_count = 0
             best_val_err = val_err
-        if break_count > 50:
+        if break_count > 10:
             break
     test_err = 0
     test_batches = 0
@@ -311,11 +311,18 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=40, binary=True, test_pct=0.04, nu
     def plot_seq(generated_seq, filename):
         plt.plot(generated_seq)
         plt.savefig(filename)
+        plt.clf()
     
     def plot_err(train_err, val_err, filename):
         xax = np.arange(0, len(train_err))
-        plt.plot(xax, train_err, 'b', xax, val_err, 'r')
+        plt.plot(xax, train_err, 'b', label='Train error')
+        plt.plot(xax, val_err, 'r', label='Val error')
+        plt.legend(loc='upper left')
+        plt.title("Train and validation error")
+        plt.xlabel("Number of epochs")
+        plt.ylabel("Loss")
         plt.savefig(filename)
+        plt.clf()
 
 
 
@@ -328,20 +335,57 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=40, binary=True, test_pct=0.04, nu
     if not os.path.exists('./samples/'+ str(folder)):
         os.makedirs('./samples/'+str(folder))
 
-    # save some example pictures so we can see what it's done 
+    # save some example audio
     num_samples = 5
     sampling_rate = 16000
     X_comp = X_test[:num_samples]
     pred_fn = theano.function([input_var], test_prediction)
+    print X_comp.shape
     X_pred = pred_fn(X_comp) #.reshape(-1, 1, width, height)
-    for i in range(num_samples):         
+    for i in range(num_samples):
         orig_file = './samples/'+ str(folder)+'/orig_sample_' + str(i) + '.wav'
         write_to_wav(orig_file, sampling_rate, X_comp[i])
         output_file = './samples/'+str(folder)+'/vae_generated_sample_' + str(i) + '.wav'
         write_to_wav(output_file, sampling_rate, X_pred[i])
-        plot_seq(X_pred[i], output_file[:-3]+'fig')
-    plot_err(train_err_list, val_err_list, './samples/'+str(folder)+'error.fig')
+        plot_seq(X_pred[i], output_file[:-3]+'png')
+    plot_err(train_err_list, val_err_list, './samples/'+str(folder)+'/error.png')
         # get_image_pair(X_comp, X_pred, idx=i, channels=1).save('output_{}.jpg'.format(i))
+    
+
+    #This iteratively "reconstructs" a given input, and chains the "reconstructions" together
+    #to form a longer audio. Like unrolling the VAE into a Markov chain
+    num_iters = 20
+    full_gen = X_pred[-1]
+    print full_gen.shape
+    print X_comp[-1].shape
+    last_pred = full_gen
+    for i in range(num_iters):        
+        next_pred = pred_fn(last_pred.reshape(1, num_inputs))
+        full_gen = np.concatenate([full_gen, next_pred.reshape(num_inputs,)])
+        last_pred = next_pred
+    output_file = './samples/'+str(folder)+'/vae_generated_seq.wav'
+    write_to_wav(output_file, sampling_rate, full_gen)
+    plot_seq(full_gen, output_file[:-3]+'png')
+    
+    #sample from the latent space
+    if z_dim == 2:
+        z_var = T.vector()
+        generated_x = nn.layers.get_output(l_x_mu_list[0], {l_z_mu:z_var}, 
+                    deterministic=True)
+        gen_fn = theano.function([z_var], generated_x)
+        interp_gen = np.array([])
+        for (x,y),val in np.ndenumerate(np.zeros((19,19))):
+            z = np.asarray([norm.ppf(0.05*(x+1)), norm.ppf(0.05*(y+1))],
+                    dtype=theano.config.floatX)
+            x_gen = gen_fn(z)
+            print x_gen.shape
+            print interp_gen.shape
+            interp_gen = np.concatenate([interp_gen, x_gen.reshape(num_inputs,)])
+            
+    output_file = './samples/'+str(folder)+'/vae_interp_seq.wav'
+    write_to_wav(output_file, sampling_rate, interp_gen)
+    plot_seq(interp_gen, output_file[:-3]+'png')
+
 
     # save the parameters so they can be loaded for next time
     #print("Saving")
@@ -381,7 +425,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_hid', type=int, dest='n_hid')
     parser.add_argument('--binary', dest='binary', action='store_true')
     parser.add_argument('--continuous', dest='binary', action='store_false')
-    parser.set_defaults(binary=True)
+    parser.set_defaults(binary=False)
     parser.add_argument('--kl_term', type=float, dest='kl_term')
     parser.add_argument('--lr', type=int, dest='lr')
     parser.add_argument('--folder', type=str, dest='folder')
