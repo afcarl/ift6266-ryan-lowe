@@ -15,7 +15,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import wave
-
+import math
 
 
 
@@ -35,10 +35,11 @@ import wave
 # Running this code with default settings should produce a manifold similar
 # to the example in this directory. An animation of the manifold's evolution
 # can be found here: https://youtu.be/pgmnCU_DxzM
+##############################################################################
 
 
 # This code has been modified by Ryan Lowe for audio prediction
-
+# ********WARNING******: modifications are very messy
 
 def create_dataset(test_pct, num_inputs):
     """ Takes the raw HDF5 file and converts it to a numpy array.
@@ -52,6 +53,7 @@ def create_dataset(test_pct, num_inputs):
         """ Data enters as a 1-D array, and split up into chunks of size
         example_size, which are separated into sequences of length seq_len.
         """
+        data = [data[i] for i in range(len(data)) if i%4==0] #for downsampling
         data = (data - sum(data) / len(data)) /  (max(data) - min(data))
         num_seq = int(len(data) / (example_size))
         data = data[: num_seq * example_size]
@@ -137,6 +139,7 @@ def build_vae(inputvar, L=2, binary=True, z_dim=2, n_hid=1024, num_inputs=32000)
     b_dec_ls = None
     for i in xrange(L):
         l_Z = GaussianSampleLayer(l_enc_mu, l_enc_logsigma, name='Z')
+        #including these lines made the code break :(. wish I had more time to figure it out
         #l_dec_hid1 = nn.layers.DenseLayer(l_Z, num_units=n_hid,
         #        nonlinearity = nn.nonlinearities.tanh if binary else T.nnet.softplus,
         #        W=nn.init.GlorotUniform() if W_dec_hid is None else W_dec_hid,
@@ -200,7 +203,7 @@ def log_likelihood(tgt, mu, ls):
     return T.sum(-(np.float32(0.5 * np.log(2 * np.pi)) + ls)
             - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
-def main(L=2, z_dim=5, n_hid=2000, num_epochs=200, binary=True, test_pct=0.04, num_inputs=32000,
+def main(L=2, z_dim=5, n_hid=2000, num_epochs=200, binary=True, test_pct=0.04, num_inputs=16000,
         lr=1e-5, kl_term=1, folder="z5h2k"):
     print("Loading data...")
     data, data_avg, data_range = create_dataset(test_pct, num_inputs)
@@ -331,7 +334,7 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=200, binary=True, test_pct=0.04, n
 
     # save some example audio
     num_samples = 5
-    sampling_rate = 16000
+    sampling_rate = 4000
     X_comp = X_test[:num_samples]
     pred_fn = theano.function([input_var], test_prediction)
     print X_comp.shape
@@ -368,7 +371,7 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=200, binary=True, test_pct=0.04, n
                     deterministic=True)
         gen_fn = theano.function([z_var], generated_x)
         interp_gen = np.array([])
-        #generation scheme 1
+        #generation scheme 1 (first 2 dimensions)
         if False:
             for x1 in range(5):
                 for y1 in range(5):
@@ -381,13 +384,14 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=200, binary=True, test_pct=0.04, n
                         z = np.asarray([x, y], dtype=theano.config.floatX)
                     x_gen = gen_fn(z)
                     interp_gen = np.concatenate([interp_gen, x_gen.reshape(num_inputs,)])
-        #generation scheme 2
+        #generation scheme 2 (circular, changed from diagonal)
         if True:       
             for x1 in range(25):
-                x = (x1 - 12) / 6
+                x = (x1 - 12) / 16  
                 #for (x,y),val in np.ndenumerate(np.zeros((6,6))):
                 if z_dim == 10:
-                    z = np.asarray([x, x, x, x, x, x, x, x, x, x], dtype=theano.config.floatX)
+                    z = np.asarray([math.sin(x), math.cos(x), math.sin(x), math.cos(x), math.sin(x), math.cos(x), 
+                        math.sin(x), math.cos(x), math.sin(x), math.cos(x)], dtype=theano.config.floatX)
                 if z_dim == 2:
                     z = np.asarray([x, y], dtype=theano.config.floatX)
                 x_gen = gen_fn(z)
