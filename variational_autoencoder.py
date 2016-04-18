@@ -200,19 +200,13 @@ def log_likelihood(tgt, mu, ls):
     return T.sum(-(np.float32(0.5 * np.log(2 * np.pi)) + ls)
             - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
-def main(L=2, z_dim=5, n_hid=2000, num_epochs=2, binary=True, test_pct=0.04, num_inputs=32000,
+def main(L=2, z_dim=5, n_hid=2000, num_epochs=200, binary=True, test_pct=0.04, num_inputs=32000,
         lr=1e-5, kl_term=1, folder="z5h2k"):
     print("Loading data...")
     data, data_avg, data_range = create_dataset(test_pct, num_inputs)
     X_train = data['train']
     X_val = data['val']
     X_test = data['test']
-    print X_train.shape
-    print X_val.shape
-    print X_test.shape
-    print X_train[0]
-    print data_avg
-    print data_range
 
     #width, height = X_train.shape[2], X_train.shape[3]
     input_var = T.matrix('inputs')
@@ -332,8 +326,8 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=2, binary=True, test_pct=0.04, num
         wavfile.write(filename, sampling_rate, generated_seq)
         np.savetxt(filename[:-3]+'txt', generated_seq)
     
-    if not os.path.exists('./samples/'+ str(folder)):
-        os.makedirs('./samples/'+str(folder))
+    if not os.path.exists('/home/ml/rlowe1/ift6266/samples/'+ str(folder)):
+        os.makedirs('/home/ml/rlowe1/ift6266/samples/'+str(folder))
 
     # save some example audio
     num_samples = 5
@@ -343,12 +337,12 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=2, binary=True, test_pct=0.04, num
     print X_comp.shape
     X_pred = pred_fn(X_comp) #.reshape(-1, 1, width, height)
     for i in range(num_samples):
-        orig_file = './samples/'+ str(folder)+'/orig_sample_' + str(i) + '.wav'
+        orig_file = '/home/ml/rlowe1/ift6266/samples/'+ str(folder)+'/orig_sample_' + str(i) + '.wav'
         write_to_wav(orig_file, sampling_rate, X_comp[i])
-        output_file = './samples/'+str(folder)+'/vae_generated_sample_' + str(i) + '.wav'
+        output_file = '/home/ml/rlowe1/ift6266/samples/'+str(folder)+'/vae_generated_sample_' + str(i) + '.wav'
         write_to_wav(output_file, sampling_rate, X_pred[i])
         plot_seq(X_pred[i], output_file[:-3]+'png')
-    plot_err(train_err_list, val_err_list, './samples/'+str(folder)+'/error.png')
+    plot_err(train_err_list, val_err_list, '/home/ml/rlowe1/ift6266/samples/'+str(folder)+'/error.png')
         # get_image_pair(X_comp, X_pred, idx=i, channels=1).save('output_{}.jpg'.format(i))
     
 
@@ -363,26 +357,43 @@ def main(L=2, z_dim=5, n_hid=2000, num_epochs=2, binary=True, test_pct=0.04, num
         next_pred = pred_fn(last_pred.reshape(1, num_inputs))
         full_gen = np.concatenate([full_gen, next_pred.reshape(num_inputs,)])
         last_pred = next_pred
-    output_file = './samples/'+str(folder)+'/vae_generated_seq.wav'
+    output_file = '/home/ml/rlowe1/ift6266/samples/'+str(folder)+'/vae_generated_seq.wav'
     write_to_wav(output_file, sampling_rate, full_gen)
     plot_seq(full_gen, output_file[:-3]+'png')
     
     #sample from the latent space
-    if z_dim == 2:
+    if z_dim == 10 or z_dim == 2:
         z_var = T.vector()
         generated_x = nn.layers.get_output(l_x_mu_list[0], {l_z_mu:z_var}, 
                     deterministic=True)
         gen_fn = theano.function([z_var], generated_x)
         interp_gen = np.array([])
-        for (x,y),val in np.ndenumerate(np.zeros((19,19))):
-            z = np.asarray([norm.ppf(0.05*(x+1)), norm.ppf(0.05*(y+1))],
-                    dtype=theano.config.floatX)
-            x_gen = gen_fn(z)
-            print x_gen.shape
-            print interp_gen.shape
-            interp_gen = np.concatenate([interp_gen, x_gen.reshape(num_inputs,)])
-            
-    output_file = './samples/'+str(folder)+'/vae_interp_seq.wav'
+        #generation scheme 1
+        if False:
+            for x1 in range(5):
+                for y1 in range(5):
+                    x = (x1 - 2) / 2
+                    y = (y1 - 2) / 2
+                    #for (x,y),val in np.ndenumerate(np.zeros((6,6))):
+                    if z_dim == 10:
+                        z = np.asarray([x, y, 0, 0, 0, 0, 0, 0, 0, 0], dtype=theano.config.floatX)
+                    if z_dim == 2:
+                        z = np.asarray([x, y], dtype=theano.config.floatX)
+                    x_gen = gen_fn(z)
+                    interp_gen = np.concatenate([interp_gen, x_gen.reshape(num_inputs,)])
+        #generation scheme 2
+        if True:       
+            for x1 in range(25):
+                x = (x1 - 12) / 6
+                #for (x,y),val in np.ndenumerate(np.zeros((6,6))):
+                if z_dim == 10:
+                    z = np.asarray([x, x, x, x, x, x, x, x, x, x], dtype=theano.config.floatX)
+                if z_dim == 2:
+                    z = np.asarray([x, y], dtype=theano.config.floatX)
+                x_gen = gen_fn(z)
+                interp_gen = np.concatenate([interp_gen, x_gen.reshape(num_inputs,)])
+               
+    output_file = '/home/ml/rlowe1/ift6266/samples/'+str(folder)+'/vae_interp_seq.wav'
     write_to_wav(output_file, sampling_rate, interp_gen)
     plot_seq(interp_gen, output_file[:-3]+'png')
 
